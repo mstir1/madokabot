@@ -6,8 +6,26 @@ import os
 import aiohttp
 import random
 
+#Dummy Server to satisfy the conditions for render
+from flask import Flask
+from threading import Thread
+
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run_server():
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_server)
+    t.start()
 
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 intents = discord.Intents.default()
@@ -162,5 +180,6 @@ async def dm(ctx):
         "\n"
         "m!kyoko - post a picture of kyoko"
         )
-
+    
+keep_alive()
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
