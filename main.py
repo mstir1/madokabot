@@ -10,9 +10,11 @@ import random
 from flask import Flask
 from threading import Thread
 
+#Loading in variable from the dotenv file
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
 
+#Dummy webpage with minimal requirements for render
 app = Flask(__name__)
 
 @app.route('/')
@@ -32,6 +34,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
+#The command prefix line to activate the bot
 bot = commands.Bot(command_prefix='m!', intents=intents)
 
 #A terminal message notifying me when the bot is online
@@ -48,13 +51,21 @@ async def on_message(message):
     await bot.process_commands(message)
 
 #!hello
+#Adding extra gifs within the script to be used, uses a random index and selects it
 @bot.command()
 async def hello(ctx):
+    gif_list = [
+        "https://giffiles.alphacoders.com/349/34921.gif", 
+        "https://giffiles.alphacoders.com/157/157971.gif", 
+        "https://giffiles.alphacoders.com/157/157963.gif", 
+        "https://giffiles.alphacoders.com/156/156529.gif",
+        "https://giffiles.alphacoders.com/158/158253.gif"
+    ]
     embed=discord.Embed(
         title=f"Hello, {ctx.author.display_name}!",
         color=discord.Color.pink()
     )
-    embed.set_image(url="https://giffiles.alphacoders.com/349/34921.gif")
+    embed.set_image(url=random.choice(gif_list))
 
     await ctx.reply(embed=embed)
 
@@ -62,13 +73,15 @@ async def hello(ctx):
 @bot.command()
 async def booru_embed(ctx, tags: str, title: str, color: discord.Color = discord.Color.pink()):
     
+    #Because madoka and homura have much more art they have a much bigger range
     if tags in ("kaname_madoka", "akemi_homura"):
         random_page = random.randint(0, 200)
     else:
-        random_page = random.randint(0, 10)
+        random_page = random.randint(0, 50)
 
     url = f"https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid={random_page}&tags={tags}"
 
+    #tbh this might be pointless because both Safebooru and Discord use cloudflare..
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
             if response.status != 200:
