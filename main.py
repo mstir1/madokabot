@@ -492,7 +492,7 @@ async def daily(ctx):
             await send_scheduled(ctx.author, "daily")
 
 async def send_scheduled(user, interval: str):
-    active_scheduled(user.id)
+    active_scheduled.add(user.id)
     sleep_time = 3600  if interval == "hourly" else 86400
     title = "Hourly Image!" if interval == "hourly" else "Daily Image!"
 
