@@ -48,7 +48,7 @@ intents.members = True
 
 #The command prefix line to activate the bot
 #the prefix is different in the bot testing purely so that I don't activate the main one instead
-bot = commands.Bot(command_prefix='m!', intents=intents)
+bot = commands.Bot(command_prefix='m!', intents=intents, help_command=None)
 
 # Helper functions
 def add_scheduled_user(user_id: int, interval: str):
