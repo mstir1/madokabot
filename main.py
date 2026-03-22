@@ -11,13 +11,20 @@ from flask import Flask
 from threading import Thread
 
 #Imported to use for date reminders
-#import dateparser
+import dateparser
 import asyncio
-#from datetime import datetime
+from datetime import datetime, timezone
+
+#Imported to utilize Supabase
+from supabase import create_client
 
 #Loading in variable from the dotenv file
 load_dotenv()
 token = os.getenv('DISCORD_TOKEN')
+supabase_url = os.getenv('SUPABASE_URL')
+supabase_key = os.getenv('SUPABASE_KEY')
+
+db = create_client(supabase_url, supabase_key)
 
 #Dummy webpage with minimal requirements for render
 app = Flask(__name__)
@@ -34,7 +41,6 @@ def keep_alive():
     t = Thread(target=run_server)
     t.start()
 
-
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
 intents = discord.Intents.default()
 intents.message_content = True
@@ -44,11 +50,71 @@ intents.members = True
 #the prefix is different in the bot testing purely so that I don't activate the main one instead
 bot = commands.Bot(command_prefix='m!', intents=intents)
 
-#A terminal message notifying me when the bot is online
+# Helper functions
+def add_scheduled_user(user_id: int, interval: str):
+    db.table('scheduled_users').upsert({'user_id': user_id, 'interval': interval}).execute()
+
+def remove_scheduled_user(user_id: int):
+    db.table('scheduled_users').delete().eq('user_id', user_id).execute()
+
+def get_scheduled_user(user_id: int):
+    result = db.table('scheduled_users').select('interval').eq('user_id', user_id).execute()
+    return result.data[0]['interval'] if result.data else None
+
+def get_all_scheduled_users():
+    result = db.table('scheduled_users').select('user_id, interval').execute()
+    return [(row['user_id'], row['interval']) for row in result.data]
+
+# Timezone helpers
+def set_user_timezone(user_id: int, tz: str):
+    db.table('user_timezones').upsert({'user_id': user_id, 'timezone': tz}).execute()
+
+def get_user_timezone(user_id: int):
+    result = db.table('user_timezones').select('timezone').eq('user_id', user_id).execute()
+    return result.data[0]['timezone'] if result.data else None
+
+# Reminder helpers
+def add_reminder(user_id: int, reminder_time: str, reminder_text: str, tz: str):
+    db.table('reminders').insert({
+        'user_id': user_id,
+        'reminder_time': reminder_time,
+        'reminder_text': reminder_text,
+        'timezone': tz
+    }).execute()
+
+def get_pending_reminders():
+    result = db.table('reminders').select('id, user_id, reminder_time, reminder_text, timezone').execute()
+    return [(row['id'], row['user_id'], row['reminder_time'], row['reminder_text'], row['timezone']) for row in result.data]
+
+def get_user_reminder_count(user_id: int):
+    result = db.table('reminders').select('id').eq('user_id', user_id).execute()
+    return len(result.data)
+
+def remove_reminder(reminder_id: int):
+    db.table('reminders').delete().eq('id', reminder_id).execute()
+
+active_scheduled = set()
+
 @bot.event
 async def on_ready():
     print(f"I am online, {bot.user.name}")
 
+    for user_id, interval in get_all_scheduled_users():
+        user = await bot.fetch_user(user_id)
+        if user:
+            bot.loop.create_task(send_scheduled(user, interval))
+
+    for reminder_id, user_id, reminder_time_str, reminder_text, user_tz in get_pending_reminders():
+        user = await bot.fetch_user(user_id)
+        if user:
+            reminder_time = datetime.fromisoformat(reminder_time_str)
+            now = datetime.now(timezone.utc)
+            wait_seconds = (reminder_time - now).total_seconds()
+            if wait_seconds > 0:
+                bot.loop.create_task(fire_reminder(user, reminder_id, reminder_text, wait_seconds, user_tz))
+            else:
+                bot.loop.create_task(fire_reminder(user, reminder_id, reminder_text, 0, user_tz))
+    
 #This function scans messages posted where the bot has access to post
 @bot.event
 async def on_message(message):
@@ -74,12 +140,6 @@ gif_list = [
     "https://animewithjisan.wordpress.com/wp-content/uploads/2021/02/giphy.gif"
     ]
 
-#This is a set variable to track which users have the daily set activated
-daily_users = set()
-
-#This is a set variable for hourly 
-hourly_users = set()
-
 #!hello
 #Added a member field so users can send hello messages to each other
 @bot.command()
@@ -97,33 +157,160 @@ async def hello(ctx, member: discord.Member = None):
 
 #!reminder
 #A very ambitous script that will remind people of whatever they want, I will figure it out later
-"""
+
+#this took me for fucking ever to figure out 
 @bot.command()
 async def reminder(ctx, *, time_str: str):
-    reminder_time = dateparser.parse(time_str.strip())
 
-    embed=discord.Embed(
-        title=f"Your Reminder is up!",
-        color=discord.Color.pink()
-    )
-    embed.set_image(url=random.choice(gif_list))
+    if get_user_reminder_count(ctx.author.id) >= 4:
+        await ctx.author.send("You already have 4 pending reminders! Please cancel one with `m!cancelreminder` before adding a new one.")
+        return
+
+    user_tz = get_user_timezone(ctx.author.id)
+
+    if not user_tz:
+        await ctx.send("You haven't set your timezone yet! Please use `m!settimezone` first.")
+        return
+
+    reminder_time = dateparser.parse(time_str.strip(), settings={
+        'RETURN_AS_TIMEZONE_AWARE': True,
+        'TIMEZONE': user_tz
+    })
 
     if not reminder_time:
         await ctx.send("Couldn't understand the time sorry")
         return
-    
-    now = datetime.now()
+
+    now = datetime.now(timezone.utc)
     wait_seconds = (reminder_time - now).total_seconds()
 
     if wait_seconds <= 0:
         await ctx.send("That time is already in the past...")
         return
-    
-    await ctx.send(f"Reminder set for {reminder_time.strftime('%B %d, %Y at %I:%M %p')}")
-    await asyncio.sleep(wait_seconds)
-    await ctx.author.send(embed=embed)
-"""
 
+    await ctx.send("What would you like to be reminded about?")
+
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel
+
+    try:
+        msg = await bot.wait_for('message', check=check, timeout=30.0)
+        reminder_text = msg.content
+    except asyncio.TimeoutError:
+        await ctx.send("Timed out, please try the command again!")
+        return
+
+    add_reminder(ctx.author.id, reminder_time.isoformat(), reminder_text, user_tz)
+    await ctx.send(f"Reminder set for **{reminder_time.strftime('%B %d, %Y at %I:%M %p')} {user_tz}**!")
+    await asyncio.sleep(wait_seconds)
+
+    embed = discord.Embed(
+        title="Your Reminder is up!",
+        description=reminder_text,
+        color=discord.Color.pink()
+    )
+    embed.set_image(url=random.choice(gif_list))
+    await ctx.author.send(embed=embed)
+
+    # Updated to use Supabase instead of get_db() Also I flat out kinda gave up with this line
+    result = db.table('reminders').select('id').eq('user_id', ctx.author.id).eq('reminder_text', reminder_text).eq('reminder_time', reminder_time.isoformat()).execute()
+    if result.data:
+        remove_reminder(result.data[0]['id'])
+
+@bot.command()
+async def settimezone(ctx):
+    await ctx.send("What time is it for you right now? (e.g. `3:45 PM`)")
+
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel
+
+    try:
+        msg = await bot.wait_for('message', check=check, timeout=30.0)
+        time_user = msg.content.strip().upper()
+
+        if "AM" in time_user or "PM" in time_user:
+            time_str = msg.content.strip()
+        else:
+            await ctx.send("Is that in AM or PM? [type AM or PM]")
+            ampm_msg = await bot.wait_for('message', check=check, timeout=30.0)
+            ampm = ampm_msg.content.strip().upper()
+        
+            if ampm not in ("AM", "PM") :
+                await ctx.send("Please type AM or PM.")
+                return
+
+            time_str = f"{msg.content.strip()} {ampm}"
+
+        user_time = dateparser.parse(time_str)
+
+        if not user_time:
+            await ctx.send("Couldn't understand that time, please try again!")
+            return
+
+        utc_now = datetime.now(timezone.utc)
+        user_hour = user_time.hour
+        utc_hour = utc_now.hour
+        offset = (user_hour - utc_hour) % 24
+        if offset > 12:
+            offset -= 24
+        user_tz = f"Etc/GMT{-offset:+d}"
+        set_user_timezone(ctx.author.id, user_tz)
+        await ctx.send(f"Got it! I'll use UTC{offset:+d} for your reminders!")
+
+    except asyncio.TimeoutError:
+        await ctx.send("Timed out, please try again!")
+
+async def fire_reminder(user, reminder_id: int, reminder_text: str, wait_seconds: float, user_tz: str):
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
+    
+    embed = discord.Embed(
+        title="Your Reminder is up! We are sorry that the bot was down...",
+        description=reminder_text,
+        color=discord.Color.pink()
+    )
+    embed.set_image(url="https://media2.giphy.com/media/v1.Y2lkPTZjMDliOTUyN2c2eTAwajFnMGVybnMwb3Ixa3JqY3FjOHZiNWN0NnE4cTVkemV3ZyZlcD12MV9naWZzX3NlYXJjaCZjdD1n/C49VVBIByntnxbuCJ7/source.gif")
+    await user.send(embed=embed)
+    remove_reminder(reminder_id)
+
+#A cancel reminders script
+@bot.command()
+async def cancelreminder(ctx):
+    #Also lowkey gave up here, thank you claude for carrying me so much here
+    result = db.table('reminders').select('id, reminder_time, reminder_text').eq('user_id', ctx.author.id).execute()
+    results = [(row['id'], row['reminder_time'], row['reminder_text']) for row in result.data]
+
+    if not results:
+        await ctx.send("You have no pending reminders!")
+        return
+
+    # Show the user their pending reminders
+    reminder_list = ""
+    for i, (reminder_id, reminder_time, reminder_text) in enumerate(results, 1):
+        parsed_time = datetime.fromisoformat(reminder_time)
+        reminder_list += f"**{i}.** {parsed_time.strftime('%B %d, %Y at %I:%M %p')} - {reminder_text}\n"
+
+    await ctx.send(f"Your pending reminders:\n{reminder_list}\nReply with the number of the reminder you want to cancel:")
+
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel
+
+    try:
+        msg = await bot.wait_for('message', check=check, timeout=30.0)
+        choice = int(msg.content.strip())
+
+        if choice < 1 or choice > len(results):
+            await ctx.send("Invalid number, please try again!")
+            return
+
+        reminder_id = results[choice - 1][0]
+        remove_reminder(reminder_id)
+        await ctx.send(f"Reminder cancelled!")
+
+    except ValueError:
+        await ctx.send("Please enter a valid number!")
+    except asyncio.TimeoutError:
+        await ctx.send("Timed out, please try again!")
 
 #This function scans safebooru based on the tags from the other bot commands
 @bot.command()
@@ -254,7 +441,7 @@ async def madohomu(ctx):
         ctx,
         tags="kaname_madoka+akemi_homura+2girls",
         title="Madohomu",
-        color=discord.Color.from_str("#c084b0")
+        color=discord.Color.purple()
     )
 
 #!kyosaya
@@ -264,48 +451,51 @@ async def kyosaya(ctx):
         ctx,
         tags="sakura_kyouko+miki_sayaka+2girls",
         title="KyoSaya",
-        color=discord.Color.from_str("#7B52AB")
+        color=discord.Color.blue()
     )
 
+# This is to track users who enter the command multiple times to prevent a bug
 
 @bot.command()
 async def hourly(ctx):
-    if ctx.author.id in hourly_users:
-        hourly_users.remove(ctx.author.id)
+    if get_scheduled_user(ctx.author.id) == "hourly":
+        remove_scheduled_user(ctx.author.id)
         await ctx.message.add_reaction("❎")
         await ctx.send("Hourly images disabled")
     else:
         # Remove from daily if active
-        if ctx.author.id in daily_users:
-            daily_users.remove(ctx.author.id)
+        if get_scheduled_user(ctx.author.id) == "daily":
+            remove_scheduled_user(ctx.author.id)
             await ctx.send("Switched from daily to hourly images!")
-        hourly_users.add(ctx.author.id)
+        add_scheduled_user(ctx.author.id, "hourly")
         await ctx.message.add_reaction("✅")
         await ctx.send("Hourly images enabled")
-        await send_scheduled(ctx.author, "hourly")
+        if ctx.author.id not in active_scheduled :
+            await send_scheduled(ctx.author, "hourly")
 
 @bot.command()
 async def daily(ctx):
-    if ctx.author.id in daily_users:
-        daily_users.remove(ctx.author.id)
+    if get_scheduled_user(ctx.author.id) == "daily":
+        remove_scheduled_user(ctx.author.id)
         await ctx.message.add_reaction("❎")
         await ctx.send("Daily images disabled")
     else:
         # Remove from hourly if active
-        if ctx.author.id in hourly_users:
-            hourly_users.remove(ctx.author.id)
+        if get_scheduled_user(ctx.author.id) == "hourly":
+            remove_scheduled_user(ctx.author.id)
             await ctx.send("Switched from hourly to daily images!")
-        daily_users.add(ctx.author.id)
+        add_scheduled_user(ctx.author.id, "daily")
         await ctx.message.add_reaction("✅")
         await ctx.send("Daily images enabled")
-        await send_scheduled(ctx.author, "daily")
+        if ctx.author.id not in active_scheduled :
+            await send_scheduled(ctx.author, "daily")
 
 async def send_scheduled(user, interval: str):
-    active_set = hourly_users if interval == "hourly" else daily_users
+    active_scheduled(user.id)
     sleep_time = 3600  if interval == "hourly" else 86400
     title = "Hourly Image!" if interval == "hourly" else "Daily Image!"
 
-    while user.id in active_set:
+    while get_scheduled_user(user.id) == interval:
         random_page = random.randint(0, 200)
         url = f"https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid={random_page}&tags=kaname_madoka"
 
@@ -315,20 +505,36 @@ async def send_scheduled(user, interval: str):
                     data = await response.json(content_type=None)
                     if data:
                         post = random.choice(data)
+                        # Build the image URL from the directory and image fields
                         image_url = f"https://safebooru.org/images/{post['directory']}/{post['image']}"
                         post_url = f"https://safebooru.org/index.php?page=post&s=view&id={post['id']}"
                         source_url = post.get('source', '').strip()
+                        width_image = post.get('width', '')
+                        height_image = post.get('height', '')
 
-                        embed = discord.Embed(title=title, url=post_url, color=discord.Color.pink())
+                        embed = discord.Embed(
+                            title=title,
+                            url=post_url, 
+                            color=discord.Color.pink()
+                        )
                         embed.set_image(url=image_url)
+
                         embed.add_field(
                             name="Source",
-                            value=f"[Link]({source_url})" if source_url else "No source provided",
+                            value=f"[Link]({source_url})"
+                            if source_url
+                            else "No Source Provided",
                             inline=True
+                        )
+                        embed.set_footer(
+                            text=f"Width: {width_image} Height {height_image}"
                         )
                         await user.send(embed=embed)
 
         await asyncio.sleep(sleep_time)
+    
+    #Removes from the active loop when done
+    active_scheduled.discard(user.id)
 
 #!dm
 @bot.command()
@@ -338,7 +544,13 @@ async def dm(ctx):
         "\n"
         "m!hello - send a hello message to yourself or to another user\n"
         "\n"
-        "m!daily or hourly - send a random picture of madoka to you every day or every hour"
+        "m!daily or hourly - send a random picture of madoka to you every day or every hour\n"
+        "\n"
+        "m!reminder - will send you a reminder message at a specific time or date you set it to, it will prompt you for the current time\n"
+        "\n"
+        "m!cancelreminder - will let you cancel any reminder that you've previously made\n"
+        "\n"
+        "m!settimezone - you can set what time it is for you at the moment\n"
         "\n"
         "m!madoka - post a random madoka image\n"
         "\n"
@@ -350,7 +562,9 @@ async def dm(ctx):
         "\n"
         "m!kyoko - post a picture of kyoko\n"
         "\n"
-        "There are some secret commands as well, if you can find them let me know cuz that's pretty cool"
+        "There are some secret commands as well, if you can find them let me know cuz that's pretty cool\n"
+        "\n"
+        "And lastly send bugs you find to me, would gladly appreciate that! This bot is still a work in progress"
         )
     
 keep_alive()
