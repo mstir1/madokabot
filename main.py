@@ -11,9 +11,9 @@ from flask import Flask
 from threading import Thread
 
 #Imported to use for date reminders
-import dateparser
+#import dateparser
 import asyncio
-from datetime import datetime
+#from datetime import datetime
 
 #Loading in variable from the dotenv file
 load_dotenv()
