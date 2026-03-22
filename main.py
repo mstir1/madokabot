@@ -464,14 +464,14 @@ async def hourly(ctx):
         await ctx.message.add_reaction("❎")
         await ctx.send("Hourly images disabled")
     else:
-        # Remove from daily if active
         if get_scheduled_user(ctx.author.id) == "daily":
             remove_scheduled_user(ctx.author.id)
+            active_scheduled.discard(ctx.author.id)  # clear's old loop
             await ctx.send("Switched from daily to hourly images!")
         add_scheduled_user(ctx.author.id, "hourly")
         await ctx.message.add_reaction("✅")
         await ctx.send("Hourly images enabled")
-        if ctx.author.id not in active_scheduled :
+        if ctx.author.id not in active_scheduled:
             await send_scheduled(ctx.author, "hourly")
 
 @bot.command()
@@ -481,14 +481,14 @@ async def daily(ctx):
         await ctx.message.add_reaction("❎")
         await ctx.send("Daily images disabled")
     else:
-        # Remove from hourly if active
         if get_scheduled_user(ctx.author.id) == "hourly":
             remove_scheduled_user(ctx.author.id)
+            active_scheduled.discard(ctx.author.id)  # clear's old loop
             await ctx.send("Switched from hourly to daily images!")
         add_scheduled_user(ctx.author.id, "daily")
         await ctx.message.add_reaction("✅")
         await ctx.send("Daily images enabled")
-        if ctx.author.id not in active_scheduled :
+        if ctx.author.id not in active_scheduled:
             await send_scheduled(ctx.author, "daily")
 
 async def send_scheduled(user, interval: str):
