@@ -93,6 +93,7 @@ def get_user_reminder_count(user_id: int):
 def remove_reminder(reminder_id: int):
     db.table('reminders').delete().eq('id', reminder_id).execute()
 
+#I don't know if this fixes anything but I just pray to god that it does
 active_scheduled = set()
 
 @bot.event
