@@ -46,6 +46,11 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
+#I don't know if this fixes anything but I just pray to god that it does
+active_scheduled = set()
+
+active_reminders = {}
+
 #The command prefix line to activate the bot
 #the prefix is different in the bot testing purely so that I don't activate the main one instead
 bot = commands.Bot(command_prefix='m!', intents=intents, help_command=None)
@@ -75,12 +80,14 @@ def get_user_timezone(user_id: int):
 
 # Reminder helpers
 def add_reminder(user_id: int, reminder_time: str, reminder_text: str, tz: str):
-    db.table('reminders').insert({
+    result = db.table('reminders').insert({
         'user_id': user_id,
         'reminder_time': reminder_time,
         'reminder_text': reminder_text,
         'timezone': tz
     }).execute()
+    reminder_id = result.data[0]['id']
+    return reminder_id
 
 def get_pending_reminders():
     result = db.table('reminders').select('id, user_id, reminder_time, reminder_text, timezone').execute()
@@ -93,8 +100,7 @@ def get_user_reminder_count(user_id: int):
 def remove_reminder(reminder_id: int):
     db.table('reminders').delete().eq('id', reminder_id).execute()
 
-#I don't know if this fixes anything but I just pray to god that it does
-active_scheduled = set()
+
 
 @bot.event
 async def on_ready():
@@ -160,11 +166,13 @@ async def hello(ctx, member: discord.Member = None):
 #A very ambitous script that will remind people of whatever they want, I will figure it out later
 
 #this took me for fucking ever to figure out 
-@bot.command()
-async def reminder(ctx, *, time_str: str):
 
-    if get_user_reminder_count(ctx.author.id) >= 4:
-        await ctx.author.send("You already have 4 pending reminders! Please cancel one with `m!cancelreminder` before adding a new one.")
+# Will change this to remindme instead of reminder since remindme is a more common command
+@bot.command()
+async def remindme(ctx, *, time_str: str):
+
+    if get_user_reminder_count(ctx.author.id) >= 5:
+        await ctx.author.send("You already have 5 pending reminders! Please cancel one with `m!cancelremindme` before adding a new one.")
         return
 
     user_tz = get_user_timezone(ctx.author.id)
@@ -201,8 +209,17 @@ async def reminder(ctx, *, time_str: str):
         await ctx.send("Timed out, please try the command again!")
         return
 
-    add_reminder(ctx.author.id, reminder_time.isoformat(), reminder_text, user_tz)
-    await ctx.send(f"Reminder set for **{reminder_time.strftime('%B %d, %Y at %I:%M %p')} {user_tz}**!")
+    
+
+    reminder_id = add_reminder(ctx.author.id, reminder_time.isoformat(), reminder_text, user_tz)
+    active_reminders[reminder_id] = asyncio.create_task(sendreminders(ctx, reminder_time, reminder_text, wait_seconds, reminder_id))
+
+    # It seems unnessesary for the bot to say the timezone for the user so that will be removed
+
+    await ctx.send(f"Reminder set for **{reminder_time.strftime('%B %d, %Y at %I:%M %p')} **!")
+    
+async def sendreminders(ctx, reminder_time, reminder_text, wait_seconds, reminder_id):
+
     await asyncio.sleep(wait_seconds)
 
     embed = discord.Embed(
@@ -214,9 +231,16 @@ async def reminder(ctx, *, time_str: str):
     await ctx.author.send(embed=embed)
 
     # Updated to use Supabase instead of get_db() Also I flat out kinda gave up with this line
+
     result = db.table('reminders').select('id').eq('user_id', ctx.author.id).eq('reminder_text', reminder_text).eq('reminder_time', reminder_time.isoformat()).execute()
     if result.data:
         remove_reminder(result.data[0]['id'])
+        
+        # checks to see if the reminder is still in memory and removes it
+        if reminder_id in active_reminders:
+            del active_reminders[reminder_id]
+
+
 
 @bot.command()
 async def settimezone(ctx):
@@ -261,23 +285,44 @@ async def settimezone(ctx):
     except asyncio.TimeoutError:
         await ctx.send("Timed out, please try again!")
 
+# Fire reminder function is fixed so that the reminder text will say it's late when the time is actually 
+# down.
+
 async def fire_reminder(user, reminder_id: int, reminder_text: str, wait_seconds: float, user_tz: str):
+
     if wait_seconds > 0:
         await asyncio.sleep(wait_seconds)
+        
+        embed = discord.Embed(
+            title="Your Reminder is up",
+            description=reminder_text,
+            color=discord.Color.pink()
+        )
+       
+        embed.set_image(url=random.choice(gif_list))
+        await user.send(embed=embed)
+        remove_reminder(reminder_id)
     
-    embed = discord.Embed(
-        title="Your Reminder is up! We are sorry that the bot was down...",
-        description=reminder_text,
-        color=discord.Color.pink()
-    )
-    embed.set_image(url="https://media2.giphy.com/media/v1.Y2lkPTZjMDliOTUyN2c2eTAwajFnMGVybnMwb3Ixa3JqY3FjOHZiNWN0NnE4cTVkemV3ZyZlcD12MV9naWZzX3NlYXJjaCZjdD1n/C49VVBIByntnxbuCJ7/source.gif")
-    await user.send(embed=embed)
-    remove_reminder(reminder_id)
+    else : 
+        
+        embed = discord.Embed(
+            title="Your Reminder is up sorry the bot was down and missed your time",
+            description=reminder_text,
+            color=discord.Color.pink()
+        )
 
-#A cancel reminders script
+        embed.set_image(url="https://media2.giphy.com/media/v1.Y2lkPTZjMDliOTUyN2c2eTAwajFnMGVybnMwb3Ixa3JqY3FjOHZiNWN0NnE4cTVkemV3ZyZlcD12MV9naWZzX3NlYXJjaCZjdD1n/C49VVBIByntnxbuCJ7/source.gif")
+        await user.send(embed=embed)
+        remove_reminder(reminder_id)
+
+#A cancel reminders script this needs to be looked at further since it's pure ai slop
+# edited the name to be 'delremindme' instead.
+
 @bot.command()
-async def cancelreminder(ctx):
+async def delremindme(ctx):
+
     #Also lowkey gave up here, thank you claude for carrying me so much here
+    
     result = db.table('reminders').select('id, reminder_time, reminder_text').eq('user_id', ctx.author.id).execute()
     results = [(row['id'], row['reminder_time'], row['reminder_text']) for row in result.data]
 
@@ -291,27 +336,38 @@ async def cancelreminder(ctx):
         parsed_time = datetime.fromisoformat(reminder_time)
         reminder_list += f"**{i}.** {parsed_time.strftime('%B %d, %Y at %I:%M %p')} - {reminder_text}\n"
 
-    await ctx.send(f"Your pending reminders:\n{reminder_list}\nReply with the number of the reminder you want to cancel:")
+    # changing this so that the bot sends it to the author privately so the whole server isn't exposed to the users
+    # reminders
+
+    await ctx.author.send(f"Your pending reminders:\n{reminder_list}\nReply with the number of the reminder you want to cancel:")
+
+    # I might just move this outside the function since it might come in handy for other functions as well
 
     def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel
+        return m.author == ctx.author
 
     try:
         msg = await bot.wait_for('message', check=check, timeout=30.0)
         choice = int(msg.content.strip())
 
         if choice < 1 or choice > len(results):
-            await ctx.send("Invalid number, please try again!")
+            await ctx.author.send("Invalid number, please try again!")
             return
 
         reminder_id = results[choice - 1][0]
         remove_reminder(reminder_id)
-        await ctx.send(f"Reminder cancelled!")
+
+        # Removes reminder from Memory
+        if reminder_id in active_reminders : 
+            active_reminders[reminder_id].cancel()
+            del active_reminders[reminder_id]
+
+        await ctx.author.send(f"Reminder cancelled!")
 
     except ValueError:
-        await ctx.send("Please enter a valid number!")
+        await ctx.author.send("Please enter a valid number!")
     except asyncio.TimeoutError:
-        await ctx.send("Timed out, please try again!")
+        await ctx.author.send("Timed out, please try again!")
 
 #This function scans safebooru based on the tags from the other bot commands
 @bot.command()
@@ -366,6 +422,9 @@ async def booru_embed(ctx, tags: str, title: str, color: discord.Color = discord
         else "No Source Provided",
         inline=True
     )
+
+    # Includes some data about the image, I might get rid of the requested user tag because the bot 
+    # replies to you anyways
     embed.set_footer(
         text=f"Requested by {ctx.author.display_name} Width: {width_image} Height {height_image}"
     )
@@ -435,7 +494,7 @@ async def sakura(ctx):
     )
 
 #!madohomu
-# added yuri to the bot
+# added yuri to the bot 
 @bot.command()
 async def madohomu(ctx):
     await booru_embed(
@@ -466,7 +525,8 @@ async def hourly(ctx):
     else:
         if get_scheduled_user(ctx.author.id) == "daily":
             remove_scheduled_user(ctx.author.id)
-            active_scheduled.discard(ctx.author.id)  # clear's old loop
+            # Clears the old loop
+            active_scheduled.discard(ctx.author.id)
             await ctx.send("Switched from daily to hourly images!")
         add_scheduled_user(ctx.author.id, "hourly")
         await ctx.message.add_reaction("✅")
@@ -483,13 +543,17 @@ async def daily(ctx):
     else:
         if get_scheduled_user(ctx.author.id) == "hourly":
             remove_scheduled_user(ctx.author.id)
-            active_scheduled.discard(ctx.author.id)  # clear's old loop
+            # Clears the old loop
+            active_scheduled.discard(ctx.author.id)
             await ctx.send("Switched from hourly to daily images!")
         add_scheduled_user(ctx.author.id, "daily")
         await ctx.message.add_reaction("✅")
         await ctx.send("Daily images enabled")
         if ctx.author.id not in active_scheduled:
             await send_scheduled(ctx.author, "daily")
+
+# The main function for hourly and daily images, Probably could be better coded to not just repeat the same code
+# as the main function for character posts, at the moment madoka is the only tag used. 
 
 async def send_scheduled(user, interval: str):
     active_scheduled.add(user.id)
@@ -535,6 +599,7 @@ async def send_scheduled(user, interval: str):
         await asyncio.sleep(sleep_time)
     
     #Removes from the active loop when done
+    #honestly idk if this even really does anything but I might as well have it just in case
     active_scheduled.discard(user.id)
 
 #!dm
@@ -547,9 +612,9 @@ async def dm(ctx):
         "\n"
         "m!daily or hourly - send a random picture of madoka to you every day or every hour\n"
         "\n"
-        "m!reminder - will send you a reminder message at a specific time or date you set it to, it will prompt you for the current time\n"
+        "m!remindme - will send you a reminder message at a specific time or date you set it to, it will prompt you for the current time\n"
         "\n"
-        "m!cancelreminder - will let you cancel any reminder that you've previously made\n"
+        "m!cancelremindme - will let you cancel any reminder that you've previously made\n"
         "\n"
         "m!settimezone - you can set what time it is for you at the moment\n"
         "\n"
