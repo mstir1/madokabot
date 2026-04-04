@@ -302,6 +302,10 @@ async def fire_reminder(user, reminder_id: int, reminder_text: str, wait_seconds
         embed.set_image(url=random.choice(gif_list))
         await user.send(embed=embed)
         remove_reminder(reminder_id)
+        
+        # Removes reminder from Memory
+        if reminder_id in active_reminders :
+            del active_reminders[reminder_id]
     
     else : 
         
@@ -314,6 +318,10 @@ async def fire_reminder(user, reminder_id: int, reminder_text: str, wait_seconds
         embed.set_image(url="https://media2.giphy.com/media/v1.Y2lkPTZjMDliOTUyN2c2eTAwajFnMGVybnMwb3Ixa3JqY3FjOHZiNWN0NnE4cTVkemV3ZyZlcD12MV9naWZzX3NlYXJjaCZjdD1n/C49VVBIByntnxbuCJ7/source.gif")
         await user.send(embed=embed)
         remove_reminder(reminder_id)
+        
+        # Removes reminder from Memory
+        if reminder_id in active_reminders : 
+            del active_reminders[reminder_id]
 
 #A cancel reminders script this needs to be looked at further since it's pure ai slop
 # edited the name to be 'delremindme' instead.
@@ -561,8 +569,9 @@ async def send_scheduled(user, interval: str):
     title = "Hourly Image!" if interval == "hourly" else "Daily Image!"
 
     while get_scheduled_user(user.id) == interval:
-        random_page = random.randint(0, 200)
-        url = f"https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid={random_page}&tags=kaname_madoka"
+        random_page = random.randint(0, 500)
+        # changed the tag to just be all of mahou_shoujo_madoka_magica, makes wayy more sense
+        url = f"https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid={random_page}&tags=mahou_shoujo_madoka_magica"
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
@@ -599,7 +608,7 @@ async def send_scheduled(user, interval: str):
         await asyncio.sleep(sleep_time)
     
     #Removes from the active loop when done
-    #honestly idk if this even really does anything but I might as well have it just in case
+    #This prevents the process from doubling because it's being ran through sqlite and memory
     active_scheduled.discard(user.id)
 
 #!dm
