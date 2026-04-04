@@ -540,7 +540,7 @@ async def hourly(ctx):
         await ctx.message.add_reaction("✅")
         await ctx.send("Hourly images enabled")
         if ctx.author.id not in active_scheduled:
-            await send_scheduled(ctx.author, "hourly")
+            bot.loop.create_task(send_scheduled(ctx.author, "hourly"))
 
 @bot.command()
 async def daily(ctx):
@@ -558,7 +558,7 @@ async def daily(ctx):
         await ctx.message.add_reaction("✅")
         await ctx.send("Daily images enabled")
         if ctx.author.id not in active_scheduled:
-            await send_scheduled(ctx.author, "daily")
+            bot.loop.create_task(send_scheduled(ctx.author, "daily"))
 
 # The main function for hourly and daily images, Probably could be better coded to not just repeat the same code
 # as the main function for character posts, at the moment madoka is the only tag used. 
